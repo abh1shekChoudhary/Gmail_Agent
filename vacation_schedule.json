@@ -1,0 +1,49 @@
+{
+  "team_schedule": [
+    {
+      "person": "Mike Ross",
+      "start_date": "2025-11-06",
+      "end_date": "2025-11-10"
+    },
+    {
+      "person": "Sarah Jen",
+      "start_date": "2025-11-17",
+      "end_date": "2025-11-18"
+    },
+    {
+      "person": "Test User",
+      "start_date": "2025-11-20",
+      "end_date": "2025-11-22"
+    },
+    {
+      "person": "David Chen",
+      "start_date": "2025-11-21",
+      "end_date": "2025-11-25"
+    },
+    {
+      "person": "Emily Ava",
+      "start_date": "2025-12-01",
+      "end_date": "2025-12-05"
+    },
+    {
+      "person": "Chris Lee",
+      "start_date": "2025-12-13",
+      "end_date": "2025-12-15"
+    },
+    {
+      "person": "Jane Doe",
+      "start_date": "2025-12-14",
+      "end_date": "2025-12-15"
+    },
+    {
+      "person": "Rachel Lin",
+      "start_date": "2025-12-22",
+      "end_date": "2025-12-26"
+    },
+    {
+      "person": "Tom Hardy",
+      "start_date": "2025-12-29",
+      "end_date": "2025-12-31"
+    }
+  ]
+}
