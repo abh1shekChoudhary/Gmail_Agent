@@ -16,6 +16,7 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.compose"]
 
 LABEL_NAME = "LEAVE_REQUEST"
+CONFIG_FILE = "config.json"
 
 def get_gmail_service():
   """Authenticates with Gmail and returns a service object."""
@@ -242,125 +243,99 @@ def get_leave_requests():
     print(f"[Tool 1] An error occurred: {error}")
     return json.dumps([])
 
-load_dotenv()
+# --- Function to load/save config file ---
+def load_config():
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+           return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
-try:
-    client = OpenAI()
-except Exception as e:
-    print(f"Error initializing OpenAI client: {e}")
-    print("Make sure you have set the OPENAI_API_KEY in your .env file.")
-    exit()
+def save_config(config):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
 
-#tool menu
-tools_list = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_leave_requests",
-            "description": "Fetches all unread emails with the 'LEAVE_REQUEST' label from Gmail.",
-            "parameters": {}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_team_policy",
-            "description": "Checks the team's vacation schedule for conflicts using two rules: Capacity (3+ people) and Overlap (70%+).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "requested_dates_list": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "A list of ALL dates to check, formatted as YYYY-MM-DD. (e.g., 'Dec 10-12' is ['2025-12-10', '2025-12-11', '2025-12-12'])."
-                    }
-                },
-                "required": ["requested_dates_list"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_leave_to_schedule",
-            "description": "Adds an approved leave request to the vacation_schedule.json file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "person": {"type": "string", "description": "The name of the person taking leave. Extract just the name (e.g., 'John Doe') from the sender string."},
-                    "start_date": {"type": "string", "description": "The start date of the leave, formatted as YYYY-MM-DD."},
-                    "end_date": {"type": "string", "description": "The end date of the leave, formatted as YYYY-MM-DD."}
-                },
-                "required": ["person", "start_date", "end_date"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_email_draft",
-            "description": "Creates a draft reply to an email thread.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "thread_id": {"type": "string", "description": "The ID of the email thread to reply to."},
-                    "to_sender": {"type": "string", "description": "The 'From' header of the original email (e.g., 'John Doe <john.doe@example.com>')."},
-                    "subject": {"type": "string", "description": "The original subject line of the email."},
-                    "reply_body": {"type": "string", "description": "The full text content of the reply email."}
-                },
-                "required": ["thread_id", "to_sender", "subject", "reply_body"]
-            }
-        }
-    }
-]
+# --- Function to get or create the Assistant ---
+def get_or_create_assistant(client, tools_list):
+    config = load_config()
+    assistant_id = config.get('assistant_id')
 
-# the Assistant
-assistant = client.beta.assistants.create(
-  name="Gmail Leave Manager",
-  
-  instructions=(
-      "You are an expert HR assistant. Your job is to process leave requests from Gmail using a strict First-Come, First-Served (FCFS) model. "
-      "1. First, call `get_leave_requests` to find new emails. This tool returns emails oldest-first. "
-      "2. If there are no requests, stop. "
-      "3. If there are requests, process them ONE BY ONE in the exact FCFS order provided. "
-      "4. For each email, YOU MUST extract the requested dates. Be smart, if the email says 'Dec 10-12', extract the full list: ['YYYY-12-10', 'YYYY-12-11', 'YYYY-12-12']. "
-      "5. Then, call `check_team_policy` with this full list of dates. "
-      "6. Based on the policy result, generate a friendly, human-sounding reply. "
-      "   - If 'Status: Approved', you MUST FIRST call `add_leave_to_schedule`. Extract the sender's name for 'person', and use the first and last dates for start/end. "
-      "   - After the schedule is updated, generate a happy approval reply. "
-      "   - If 'Status: Hard Conflict (Capacity)', be professional and apologetic. **Specifically state the date(s) that have a capacity issue (this info will be in the tool's status message).** Then, ask them to suggest alternative dates. "
-      "   - If 'Status: Hard Conflict (Overlap)', explain that the request has a major (70%+) overlap with another employee. Be sure to state the details from the tool's message. "
-      "   - In all conflict cases, DO NOT call `add_leave_to_schedule`. "
-      "7. Finally, call `create_email_draft` with all the correct info to create the reply draft. "
-      "8. Report a final summary of all actions taken."
-  ),
-  
+    if assistant_id:
+        try:
+            assistant = client.beta.assistants.retrieve(assistant_id)
+            print(f"--- Retrieved existing assistant (ID: {assistant.id}) ---")
+            return assistant
+        except Exception as e:
+            print(f"Warning: Could not retrieve assistant {assistant_id}. Creating a new one. Error: {e}")
 
-  model="gpt-4o",
-  tools=tools_list
-)
-
-def run_agent():
-    print(f"--- Initializing agent (ID: {assistant.id}) ---")
+    print("--- Creating new assistant... ---")
+    assistant = client.beta.assistants.create(
+        name="Gmail Leave Manager",
+        instructions=(
+          "You are an expert HR assistant. Your job is to process leave requests from Gmail using a strict First-Come, First-Served (FCFS) model. "
+          "1. First, call `get_leave_requests` to find new emails. This tool returns emails oldest-first. "
+          "2. If there are no requests, stop. "
+          "3. If there are requests, process them ONE BY ONE in the exact FCFS order provided. "
+          "4. For each email, YOU MUST extract the requested dates. Be smart, if the email says 'Dec 10-12', extract the full list: ['YYYY-12-10', 'YYYY-12-11', 'YYYY-12-12']. "
+          "5. Then, call `check_team_policy` with this full list of dates. "
+          "6. Based on the policy result, generate a friendly, human-sounding reply. "
+          "   - If 'Status: Approved', you MUST FIRST call `add_leave_to_schedule`. Extract the sender's name for 'person', and use the first and last dates for start/end. "
+          "   - After the schedule is updated, generate a happy approval reply. "
+          "   - If 'Status: Hard Conflict (Capacity)', be professional and apologetic. **Specifically state the date(s) that have a capacity issue (this info will be in the tool's status message).** Then, ask them to suggest alternative dates. "
+          "   - If 'Status: Hard Conflict (Overlap)', explain that the request has a major (70%+) overlap with another employee. Be sure to state the details from the tool's message. "
+          "   - In all conflict cases, DO NOT call `add_leave_to_schedule`. "
+          "7. Finally, call `create_email_draft` with all the correct info to create the reply draft. "
+          "8. Report a final summary of all actions taken."
+        ),
+        model="gpt-4o",
+        tools=tools_list
+    )
     
+    config['assistant_id'] = assistant.id
+    save_config(config)
+    print(f"--- New assistant created and saved (ID: {assistant.id}) ---")
+    return assistant
+
+# ---Function to get or create the Thread ---
+def get_or_create_thread(client):
+    config = load_config()
+    thread_id = config.get('thread_id')
+
+    if thread_id:
+        try:
+            client.beta.threads.retrieve(thread_id)
+            print(f"--- Retrieved existing thread (ID: {thread_id}) ---")
+            return thread_id
+        except Exception as e:
+            print(f"Warning: Could not retrieve thread {thread_id}. Creating a new one. Error: {e}")
+
+    print("--- Creating new conversation thread... ---")
     thread = client.beta.threads.create()
-    print(f"--- New conversation thread created (ID: {thread.id}) ---")
+    
+    config['thread_id'] = thread.id
+    save_config(config)
+    print(f"--- New thread created and saved (ID: {thread.id}) ---")
+    return thread.id
+
+# --- Function to process a single message ---
+def process_message(client, assistant_id, thread_id, user_message):
+    print(f"\n> You: {user_message}")
 
     client.beta.threads.messages.create(
-        thread_id=thread.id,
+        thread_id=thread_id,
         role="user",
-        content="Please check for any new leave requests and process them."
+        content=user_message
     )
 
     run = client.beta.threads.runs.create(
-        thread_id=thread.id,
-        assistant_id=assistant.id
+        thread_id=thread_id,
+        assistant_id=assistant_id
     )
     print(f"--- Agent Run started (ID: {run.id}) ---")
 
     while run.status in ['queued', 'in_progress']:
         time.sleep(1) 
-        run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+        run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
         print(f"Run status: {run.status}")
 
         if run.status == 'requires_action':
@@ -404,17 +379,17 @@ def run_agent():
             if tool_outputs:
                 print(f"--- Submitting tool outputs back to agent... ---")
                 run = client.beta.threads.runs.submit_tool_outputs(
-                    thread_id=thread.id,
+                    thread_id=thread_id,
                     run_id=run.id,
                     tool_outputs=tool_outputs
                 )
 
         elif run.status == 'completed':
             print("--- Agent Run completed! ---")
-            messages = client.beta.threads.messages.list(thread_id=thread.id)
+            messages = client.beta.threads.messages.list(thread_id=thread_id)
             for msg in messages.data:
                 if msg.role == "assistant":
-                    print(f"Agent: {msg.content[0].text.value}")
+                    print(f"\n> Agent: {msg.content[0].text.value}")
                     break
             break 
         
@@ -423,11 +398,96 @@ def run_agent():
             print(run.last_error)
             break
 
-if __name__ == "__main__":
+# --- Main execution ---
+def main():
+    load_dotenv()
+
     try:
-        run_agent()
-    finally:
-        if 'assistant' in locals():
-            print(f"\n--- Deleting assistant {assistant.id} ---")
-            client.beta.assistants.delete(assistant.id)
-            print("Cleanup complete.")
+        client = OpenAI()
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {e}")
+        print("Make sure you have set the OPENAI_API_KEY in your .env file.")
+        exit()
+
+    #tool menu
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_leave_requests",
+                "description": "Fetches all unread emails with the 'LEAVE_REQUEST' label from Gmail.",
+                "parameters": {}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "check_team_policy",
+                "description": "Checks the team's vacation schedule for conflicts using two rules: Capacity (3+ people) and Overlap (70%+).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "requested_dates_list": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "A list of ALL dates to check, formatted as YYYY-MM-DD. (e.g., 'Dec 10-12' is ['2025-12-10', '2025-12-11', '2025-12-12'])."
+                        }
+                    },
+                    "required": ["requested_dates_list"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_leave_to_schedule",
+                "description": "Adds an approved leave request to the vacation_schedule.json file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "person": {"type": "string", "description": "The name of the person taking leave. Extract just the name (e.g., 'John Doe') from the sender string."},
+                        "start_date": {"type": "string", "description": "The start date of the leave, formatted as YYYY-MM-DD."},
+                        "end_date": {"type": "string", "description": "The end date of the leave, formatted as YYYY-MM-DD."}
+                    },
+                    "required": ["person", "start_date", "end_date"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_email_draft",
+                "description": "Creates a draft reply to an email thread.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": {"type": "string", "description": "The ID of the email thread to reply to."},
+                        "to_sender": {"type": "string", "description": "The 'From' header of the original email (e.g., 'John Doe <john.doe@example.com>')."},
+                        "subject": {"type": "string", "description": "The original subject line of the email."},
+                        "reply_body": {"type": "string", "description": "The full text content of the reply email."}
+                    },
+                    "required": ["thread_id", "to_sender", "subject", "reply_body"]
+                }
+            }
+        }
+    ]
+
+    # Get the permanent assistant and thread
+    assistant = get_or_create_assistant(client, tools_list)
+    thread_id = get_or_create_thread(client)
+
+    print("\n--- Gmail Leave Manager is running ---")
+    print("Type your commands below (e.g., 'check for leave requests')")
+    print("Type 'quit' to exit.")
+
+    # Start the interactive chat loop
+    while True:
+        user_message = input("\n> You: ")
+        if user_message.lower() == 'quit':
+            print("--- Goodbye! ---")
+            break
+        
+        process_message(client, assistant.id, thread_id, user_message)
+
+if __name__ == "__main__":
+    main()
